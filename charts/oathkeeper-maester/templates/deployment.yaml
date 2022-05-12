@@ -18,10 +18,7 @@ spec:
       app.kubernetes.io/name: {{ include "oathkeeper-maester.name" . }}
       app.kubernetes.io/instance: {{ .Release.Name }}
   strategy:
-    rollingUpdate:
-      maxSurge: 25%
-      maxUnavailable: 25%
-    type: RollingUpdate
+    {{- toYaml .Values.deployment.strategy | nindent 4 }}
   template:
     metadata:
       labels:
@@ -35,12 +32,12 @@ spec:
     spec:
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "imageurl" (dict "reg" .Values.global.containerRegistry "img" .Values.global.images.oathkeeper) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /manager
           args:
-            - --metrics-addr=0.0.0.0:8080
+            - --metrics-addr=0.0.0.0:{{ .Values.port.metrics }}
             - controller
             - --rulesConfigmapName={{ include "oathkeeper-maester.getCM" . }}
             {{- if .Values.rulesConfigmapNamespace }}
@@ -53,12 +50,24 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.deployment.resources | nindent 12 }}
+          securityContext:
+             allowPrivilegeEscalation: false
+             capabilities:
+               drop:
+               - ALL
+             privileged: false
+             runAsGroup: 1000
+             runAsNonRoot: true
+             runAsUser: 1000
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           {{- with .Values.deployment.envs }}
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          ports:
+            - containerPort: {{ .Values.port.metrics }}
+              name: metrics
       serviceAccountName: {{ include "oathkeeper-maester.name" . }}-account
       dnsPolicy: ClusterFirst
       restartPolicy: Always
@@ -68,6 +77,9 @@ spec:
       {{- with .Values.deployment.nodeSelector }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if .Values.global.priorityClassName }}
+      priorityClassName: {{ .Values.global.priorityClassName }}
+    {{- end }}
     {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}

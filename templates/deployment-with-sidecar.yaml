@@ -11,11 +11,15 @@ metadata:
     mode: {{ .Values.global.ory.oathkeeper.maester.mode }}
 {{ include "oathkeeper.labels" . | indent 4 }}
 spec:
+{{- if not .Values.deployment.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+{{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "oathkeeper.name" . }}
       app.kubernetes.io/instance: {{ .Release.Name }}
+  strategy:
+    {{- toYaml .Values.deployment.strategy | nindent 4 }}
   template:
     metadata:
       labels:
@@ -42,10 +46,10 @@ spec:
           emptyDir: {}
         - name: {{ include "oathkeeper.name" . }}-secrets-volume
           secret:
-            secretName: {{ include "oathkeeper.fullname" . }}
+            secretName: {{ include "oathkeeper.fullname" . }}-jwks-secret
       initContainers:
         - name: init
-          image: busybox:1
+          image: "{{ include "imageurl" (dict "reg" .Values.global.containerRegistry "img" .Values.global.images.busybox) }}"
           volumeMounts:
             - name: {{ include "oathkeeper.name" . }}-rules-volume
               mountPath: /etc/rules
@@ -57,16 +61,23 @@ spec:
               touch /etc/rules/access-rules.json
               chmod 666 /etc/rules/access-rules.json
           securityContext:
-            {{- toYaml .Values.deployment.securityContext | nindent 12 }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            runAsGroup: 65534
+            runAsNonRoot: true
+            runAsUser: 65534
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "imageurl" (dict "reg" .Values.global.containerRegistry "img" .Values.global.images.oathkeeper) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [ "oathkeeper", "serve", "--config", "/etc/config/config.yaml" ]
           env:
-            {{- if .Values.oathkeeper.mutatorIdTokenJWKs }}
+            {{- if .Values.oathkeeper.config.mutators.id_token.config.jwks_url }}
             - name: MUTATORS_ID_TOKEN_CONFIG_JWKS_URL
-              value: "file:///etc/secrets/mutator.id_token.jwks.json"
+              value: "{{.Values.oathkeeper.config.mutators.id_token.config.jwks_url}}"
             {{- end }}
           volumeMounts:
             - name: {{ include "oathkeeper.name" . }}-config-volume
@@ -89,16 +100,29 @@ spec:
             httpGet:
               path: /health/alive
               port: http-api
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 10
           readinessProbe:
             httpGet:
               path: /health/ready
               port: http-api
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            runAsGroup: 101
+            runAsNonRoot: true
+            runAsUser: 100
           resources:
             {{- toYaml .Values.deployment.resources | nindent 12 }}
-          securityContext:
-            {{- toYaml .Values.deployment.securityContext | nindent 12 }}
         - name: {{ .Chart.Name }}-maester
-          image: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag }}"
+          image: "{{ include "imageurl" (dict "reg" .Values.global.containerRegistry "img" .Values.global.images.oathkeeper_maester) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /manager
@@ -107,25 +131,34 @@ spec:
             - sidecar
             - --rulesFilePath=/etc/rules/access-rules.json
           resources:
-            {{- toYaml .Values.deployment.resources | nindent 12 }}
-          {{- with .Values.sidecar.envs }}
+            {{- index .Values "oathkeeper-maester" "deployment" "resources"  | toYaml | nindent 12 }}
           env:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            - name: mutatorsAvailable
+              value: noop,id_token,header,cookie,hydrator
           ports:
             - containerPort: 8080
               name: metrics
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
           volumeMounts:
             - name: {{ include "oathkeeper.name" . }}-rules-volume
               mountPath: /etc/rules
               readOnly: false
-          securityContext:
-            {{- toYaml .Values.deployment.securityContext | nindent 12 }}
-      serviceAccountName: {{ default "maester" .Values.maester.nameOverride }}-account
+      serviceAccountName: {{ include "oathkeeper-maester.name" . }}-maester-account
       {{- with .Values.deployment.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if .Values.global.priorityClassName }}
+      priorityClassName: {{ .Values.global.priorityClassName }}
+    {{- end }}
     {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
